@@ -28,6 +28,7 @@ public:
 
 	void		start_guis(int w, int h);
 	void		draw_topology();
+	void		draw_elipsoid();
 
 	Vector3DI	m_DataRes;
 	int			m_DataBpp;			// 1=byte, 2=ushort, 4=float
@@ -37,6 +38,7 @@ public:
 	int			m_gvdb_tex;
 	int			mouse_down;
 	bool		m_show_topo;
+	bool		m_elipsoid;
 };
 Sample sample_obj;
 
@@ -56,7 +58,7 @@ void Sample::start_guis(int w, int h)
 	guiSetCallback(handle_gui);
 	// HINT:  Gui user interface options
 	addGui(20, h - 30, 130, 20, "Topology", GUI_CHECK, GUI_BOOL, &m_show_topo, 0, 1);
-	addGui(20, h - 30, 130, 20, "Topology", GUI_CHECK, GUI_BOOL, &m_show_topo, 0, 1);
+	addGui(160, h - 30, 130, 20, "Elipsoid", GUI_CHECK, GUI_BOOL, &m_elipsoid, 0, 1);
 }
 
 bool Sample::ConvertToFloat(Vector3DI res, uchar* dat)
@@ -163,6 +165,7 @@ bool Sample::init()
 	m_gvdb_tex = -1;
 	mouse_down = -1;
 	m_show_topo = false;
+	m_elipsoid = false;
 	m_DataBuf = 0;
 
 	init2D("arial");
@@ -291,6 +294,22 @@ void Sample::draw_topology()
 	end3D();										// end 3D drawing
 }
 
+void Sample::draw_elipsoid() {
+	start3D(gvdb.getScene()->getCamera());		// start 3D drawing
+	int lev = 1;
+	int node_cnt = gvdb.getNumNodes(lev);
+	Vector3DF bmin, bmax;
+	Node* node;
+	for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
+		node = gvdb.getNodeAtLevel(n, lev);
+		bmin = gvdb.getWorldMin(node);		// get node bounding box
+		bmax = gvdb.getWorldMax(node);		// draw node as a box
+		drawLine3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
+		//drawBox3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, clrs[lev].x, clrs[lev].y, clrs[lev].z, 1);
+	}
+	end3D();										// end 3D drawing
+}
+
 
 void Sample::display()
 {
@@ -312,6 +331,8 @@ void Sample::display()
 	renderScreenQuadGL(m_gvdb_tex);
 
 	if (m_show_topo) draw_topology();			// Draw GVDB topology 
+
+	if (m_elipsoid) draw_elipsoid();			// Draw GVDB elipsoid 
 
 	draw3D();									// Render the 3D drawing groups
 	drawGui(0);
