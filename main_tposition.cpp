@@ -1,5 +1,3 @@
-
-
 // GVDB library
 #include "gvdb.h"			
 #include "gvdb_render.h"	// OpenGL rendering
@@ -42,7 +40,6 @@ public:
 };
 Sample sample_obj;
 
-
 void handle_gui(int gui, float val)
 {
 	if (gui >= 1) {
@@ -84,7 +81,7 @@ bool Sample::LoadRAW(char* fname, Vector3DI res, int bpp)
 	char scnpath[1024];
 	printf("Loading volume data.\n");
 
-	if (!gvdb.getScene()->FindFile("out.raw", scnpath)){
+	if (!gvdb.getScene()->FindFile("out.raw", scnpath)) {
 		printf("Cannot find pvm file %s.\n", fname);
 		nverror();
 	}
@@ -132,7 +129,8 @@ void Sample::Rebuild(Vector3DF vmax)
 	//         Also, source X-axis is 128, so we scale the output res of 256 by 0.5. Scale=(.5,-1,1)
 	// Transl: Source has Z+/- inverted, so we translate to adjust the inverted Y. Trans=(0,0,256)
 	//
-	xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 0, 1), Vector3DF(0, 1, 0), Vector3DF(0, 0, 252), Vector3DF(1, -1, 1));
+	//xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 0, 1), Vector3DF(0, 1, 0), Vector3DF(0, 0, 252), Vector3DF(1, -1, 1));
+	xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 1, 0), Vector3DF(0, 0, 1), Vector3DF(0, 0, 1), Vector3DF(1, 1, 1));
 
 	// Activate volume
 	printf("Activate GVDB volume.\n");
@@ -141,20 +139,29 @@ void Sample::Rebuild(Vector3DF vmax)
 
 	// Dense - Activate all bricks in the data volume
 	// To load data densely, we simply active every brick in the volume extents.
-	gvdb.ActivateRegion(0, e);
+	//gvdb.ActivateRegion(0, e);
+
+	// Sparse - Only activate bricks above threshold value
+	// To load data sparsely, we downsample the volume to get the average value at each brick.		
+	// DownsampleCPU will downsample the input AUX volume and retrieve the values back to CPU.
+	//gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
+	gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
+
+	// Then we only activate bricks whose average is above some threshold.
+	gvdb.ActivateRegionFromAux(e, AUX_DOWNSAMPLED, T_FLOAT, 0.00001f);
+
 
 	gvdb.FinishTopology();
 	gvdb.UpdateAtlas();
 	gvdb.ClearAllChannels();
-
 	// Resample data. 
 	// The two vectors here represent the input and output value ranges.
 	// During ConvertToFloat we already divided the source uchar by 256, so input data is already [0,1]. 
 	// Output data, stored in GVDB, will also be [0,1]. Third value is reserved for future (ignored).
+
 	printf("Resample.\n");
 	gvdb.Resample(0, xform, m_DataRes, AUX_DATA3D, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
 }
-
 
 CUmodule		cuCustom;
 CUfunction		cuRaycastKernel;
@@ -262,7 +269,6 @@ void Sample::reshape(int w, int h)
 	postRedisplay();
 }
 
-
 void Sample::draw_topology()
 {
 	Vector3DF clrs[10];
@@ -296,20 +302,20 @@ void Sample::draw_topology()
 
 void Sample::draw_elipsoid() {
 	start3D(gvdb.getScene()->getCamera());		// start 3D drawing
-	int lev = 1;
+	int lev = 0;
 	int node_cnt = gvdb.getNumNodes(lev);
 	Vector3DF bmin, bmax;
 	Node* node;
-	for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
-		node = gvdb.getNodeAtLevel(n, lev);
-		bmin = gvdb.getWorldMin(node);		// get node bounding box
-		bmax = gvdb.getWorldMax(node);		// draw node as a box
-		drawLine3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
-		//drawBox3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, clrs[lev].x, clrs[lev].y, clrs[lev].z, 1);
-	}
+	//for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
+	int n = 25;
+	node = gvdb.getNodeAtLevel(n, lev);
+	bmin = gvdb.getWorldMin(node);		// get node bounding box
+	bmax = gvdb.getWorldMax(node);		// draw node as a box
+	//drawLine3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
+	drawBox3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
+	//}
 	end3D();										// end 3D drawing
 }
-
 
 void Sample::display()
 {
@@ -345,7 +351,6 @@ void Sample::keyboardchar(unsigned char key, int mods, int x, int y)
 	case '1':	m_show_topo = !m_show_topo;	break;
 	};
 }
-
 
 void Sample::motion(int x, int y, int dx, int dy)
 {
