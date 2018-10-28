@@ -114,7 +114,7 @@ void Sample::Rebuild(Vector3DF vmax)
 
 	// Configure VDB 
 	printf("Configure GVDB.\n");
-	gvdb.Configure(3, 3, 3, 3, 4);
+	gvdb.Configure(3, 3, 3, 2, 3);
 	gvdb.SetVoxelSize(1, 1, 1);
 	gvdb.SetChannelDefault(16, 16, 16);
 	gvdb.AddChannel(0, T_FLOAT, 1);
@@ -302,18 +302,17 @@ void Sample::draw_topology()
 
 void Sample::draw_elipsoid() {
 	start3D(gvdb.getScene()->getCamera());		// start 3D drawing
-	int lev = 0;
+	int lev = 1;
 	int node_cnt = gvdb.getNumNodes(lev);
 	Vector3DF bmin, bmax;
 	Node* node;
-	//for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
-	int n = 25;
-	node = gvdb.getNodeAtLevel(n, lev);
-	bmin = gvdb.getWorldMin(node);		// get node bounding box
-	bmax = gvdb.getWorldMax(node);		// draw node as a box
-	//drawLine3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
-	drawBox3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
-	//}
+	for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
+		node = gvdb.getNodeAtLevel(n, lev);
+		bmin = gvdb.getWorldMin(node);		// get node bounding box
+		bmax = gvdb.getWorldMax(node);		// draw node as a box
+		//drawLine3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
+		drawBox3D(bmin.x, bmin.y, bmin.z, bmax.x, bmax.y, bmax.z, 0, 0, 1, 1);
+	}
 	end3D();										// end 3D drawing
 }
 
