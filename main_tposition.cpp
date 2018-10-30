@@ -3,14 +3,16 @@
 #include "gvdb_render.h"	// OpenGL rendering
 using namespace nvdb;
 
-// Sample utils
+// T Position utils
 #include "main.h"			// window system 
 #include "nv_gui.h"			// gui system
 #include <GL/glew.h>
 
-VolumeGVDB	gvdb;
+VolumeGVDB		gvdb;
+CUmodule		cuCustom;
+CUfunction		cuRaycastKernel;
 
-class Sample : public NVPWindow {
+class Tposition : public NVPWindow {
 public:
 	virtual bool init();
 	virtual void display();
@@ -21,8 +23,8 @@ public:
 
 	bool		LoadRAW(char* fname, Vector3DI res, int bpp);
 	bool		ConvertToFloat(Vector3DI res, uchar* dat);
-	void		Rebuild() { Rebuild(m_VolMax); }
-	void		Rebuild(Vector3DF vmax);
+	void		Rebuild() { Rebuild(m_VolMax, m_dense); }
+	void		Rebuild(Vector3DF vmax, bool dense);
 
 	void		start_guis(int w, int h);
 	void		draw_topology();
@@ -37,18 +39,19 @@ public:
 	int			mouse_down;
 	bool		m_show_topo;
 	bool		m_elipsoid;
+	bool		m_dense;
 };
-Sample sample_obj;
+Tposition t_position_obj;
 
 void handle_gui(int gui, float val)
 {
 	if (gui >= 1) {
-		sample_obj.Rebuild();
+		t_position_obj.Rebuild();
 	}
-	sample_obj.postRedisplay();
+	t_position_obj.postRedisplay();
 }
 
-void Sample::start_guis(int w, int h)
+void Tposition::start_guis(int w, int h)
 {
 	clearGuis();
 	setview2D(w, h);
@@ -56,9 +59,10 @@ void Sample::start_guis(int w, int h)
 	// HINT:  Gui user interface options
 	addGui(20, h - 30, 130, 20, "Topology", GUI_CHECK, GUI_BOOL, &m_show_topo, 0, 1);
 	addGui(160, h - 30, 130, 20, "Elipsoid", GUI_CHECK, GUI_BOOL, &m_elipsoid, 0, 1);
+	addGui(300, h - 30, 130, 20, "Dense", GUI_CHECK, GUI_BOOL, &m_dense, 0, 1);
 }
 
-bool Sample::ConvertToFloat(Vector3DI res, uchar* dat)
+bool Tposition::ConvertToFloat(Vector3DI res, uchar* dat)
 {
 	float* vnew = (float*)malloc(res.x*res.y*res.z * sizeof(float));
 	float* vdest = vnew;
@@ -75,7 +79,7 @@ bool Sample::ConvertToFloat(Vector3DI res, uchar* dat)
 	return true;
 }
 
-bool Sample::LoadRAW(char* fname, Vector3DI res, int bpp)
+bool Tposition::LoadRAW(char* fname, Vector3DI res, int bpp)
 {
 	// Load RAW in CPU memory
 	char scnpath[1024];
@@ -107,14 +111,15 @@ bool Sample::LoadRAW(char* fname, Vector3DI res, int bpp)
 	fclose(fp);
 }
 
-void Sample::Rebuild(Vector3DF vmax)
+void Tposition::Rebuild(Vector3DF vmax, bool dense)
 {
 	gvdb.Clear();
 	gvdb.DestroyChannels();
 
 	// Configure VDB 
 	printf("Configure GVDB.\n");
-	gvdb.Configure(3, 3, 3, 2, 3);
+	gvdb.Configure(3, 3, 3, 3, 5);
+	//gvdb.Configure(3, 3, 3, 2, 3);
 	gvdb.SetVoxelSize(1, 1, 1);
 	gvdb.SetChannelDefault(16, 16, 16);
 	gvdb.AddChannel(0, T_FLOAT, 1);
@@ -137,19 +142,21 @@ void Sample::Rebuild(Vector3DF vmax)
 	Extents e;
 	e = gvdb.ComputeExtents(1, Vector3DF(0, 0, 0), vmax);
 
-	// Dense - Activate all bricks in the data volume
-	// To load data densely, we simply active every brick in the volume extents.
-	//gvdb.ActivateRegion(0, e);
+	if (dense) {
+		// Dense - Activate all bricks in the data volume
+		// To load data densely, we simply active every brick in the volume extents.
+		gvdb.ActivateRegion(0, e);
+	}
+	else {
+		// Sparse - Only activate bricks above threshold value
+		// To load data sparsely, we downsample the volume to get the average value at each brick.		
+		// DownsampleCPU will downsample the input AUX volume and retrieve the values back to CPU.
+		//gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
+		gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
 
-	// Sparse - Only activate bricks above threshold value
-	// To load data sparsely, we downsample the volume to get the average value at each brick.		
-	// DownsampleCPU will downsample the input AUX volume and retrieve the values back to CPU.
-	//gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
-	gvdb.DownsampleCPU(xform, m_DataRes, AUX_DATA3D, e.ires, vmax, AUX_DOWNSAMPLED, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
-
-	// Then we only activate bricks whose average is above some threshold.
-	gvdb.ActivateRegionFromAux(e, AUX_DOWNSAMPLED, T_FLOAT, 0.00001f);
-
+		// Then we only activate bricks whose average is above some threshold.
+		gvdb.ActivateRegionFromAux(e, AUX_DOWNSAMPLED, T_FLOAT, 0.00001f);
+	}
 
 	gvdb.FinishTopology();
 	gvdb.UpdateAtlas();
@@ -163,16 +170,14 @@ void Sample::Rebuild(Vector3DF vmax)
 	gvdb.Resample(0, xform, m_DataRes, AUX_DATA3D, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
 }
 
-CUmodule		cuCustom;
-CUfunction		cuRaycastKernel;
-
-bool Sample::init()
+bool Tposition::init()
 {
 	int w = getWidth(), h = getHeight();			// window width & height
 	m_gvdb_tex = -1;
 	mouse_down = -1;
 	m_show_topo = false;
 	m_elipsoid = false;
+	m_dense = false;
 	m_DataBuf = 0;
 
 	init2D("arial");
@@ -204,7 +209,7 @@ bool Sample::init()
 
 	// Rebuild the data in GVDB	
 	m_VolMax = Vector3DF(500, 500, 400);
-	Rebuild(m_VolMax);
+	Rebuild(m_VolMax, m_dense);
 
 	// Set volume params
 	//gvdb.getScene()->SetSteps(.5, 16, .5);				// Set raycasting steps
@@ -254,7 +259,7 @@ bool Sample::init()
 	return true;
 }
 
-void Sample::reshape(int w, int h)
+void Tposition::reshape(int w, int h)
 {
 	// Resize the opengl screen texture
 	glViewport(0, 0, w, h);
@@ -269,7 +274,7 @@ void Sample::reshape(int w, int h)
 	postRedisplay();
 }
 
-void Sample::draw_topology()
+void Tposition::draw_topology()
 {
 	Vector3DF clrs[10];
 	clrs[0] = Vector3DF(0, 0, 1);			// blue
@@ -300,9 +305,9 @@ void Sample::draw_topology()
 	end3D();										// end 3D drawing
 }
 
-void Sample::draw_elipsoid() {
+void Tposition::draw_elipsoid() {
 	start3D(gvdb.getScene()->getCamera());		// start 3D drawing
-	int lev = 1;
+	int lev = 0;
 	int node_cnt = gvdb.getNumNodes(lev);
 	Vector3DF bmin, bmax;
 	Node* node;
@@ -316,7 +321,7 @@ void Sample::draw_elipsoid() {
 	end3D();										// end 3D drawing
 }
 
-void Sample::display()
+void Tposition::display()
 {
 	int w = getWidth(), h = getHeight();			// window width & height
 
@@ -344,14 +349,14 @@ void Sample::display()
 	draw2D();
 }
 
-void Sample::keyboardchar(unsigned char key, int mods, int x, int y)
+void Tposition::keyboardchar(unsigned char key, int mods, int x, int y)
 {
 	switch (key) {
 	case '1':	m_show_topo = !m_show_topo;	break;
 	};
 }
 
-void Sample::motion(int x, int y, int dx, int dy)
+void Tposition::motion(int x, int y, int dx, int dy)
 {
 	// Get camera for GVDB Scene
 	Camera3D* cam = gvdb.getScene()->getCamera();
@@ -386,7 +391,7 @@ void Sample::motion(int x, int y, int dx, int dy)
 	}
 }
 
-void Sample::mouse(NVPWindow::MouseButton button, NVPWindow::ButtonAction state, int mods, int x, int y)
+void Tposition::mouse(NVPWindow::MouseButton button, NVPWindow::ButtonAction state, int mods, int x, int y)
 {
 	if (guiHandler(button, state, x, y)) return;
 
@@ -396,11 +401,9 @@ void Sample::mouse(NVPWindow::MouseButton button, NVPWindow::ButtonAction state,
 
 int sample_main(int argc, const char** argv)
 {
-	return sample_obj.run("Transform to T-position", "t-position", argc, argv, 640, 480, 4, 5);
+	return t_position_obj.run("Transform to T-position", "t-position", argc, argv, 1280, 720, 4, 5);
 }
 
 void sample_print(int argc, char const *argv)
 {
 }
-
-
