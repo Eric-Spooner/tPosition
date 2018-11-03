@@ -20,6 +20,7 @@ public:
 	virtual void motion(int x, int y, int dx, int dy);
 	virtual void keyboardchar(unsigned char key, int mods, int x, int y);
 	virtual void mouse(NVPWindow::MouseButton button, NVPWindow::ButtonAction state, int mods, int x, int y);
+	virtual void printVector3DF(Vector3DF vector);
 
 	bool		LoadRAW(char* fname, Vector3DI res, int bpp);
 	bool		ConvertToFloat(Vector3DI res, uchar* dat);
@@ -51,6 +52,82 @@ void handle_gui(int gui, float val)
 	t_position_obj.postRedisplay();
 }
 
+
+bool Tposition::init()
+{
+	int w = getWidth(), h = getHeight();			// window width & height
+	m_gvdb_tex = -1;
+	mouse_down = -1;
+	m_show_topo = false;
+	m_elipsoid = false;
+	m_dense = false;
+	m_DataBuf = 0;
+
+	init2D("arial");
+
+	char* path = "../resource";
+
+	// ------------- Initialize GVDB ---------------------------
+	int devid = -1;
+	// used to hold statics and other performance information
+	gvdb.SetVerbose(true);
+	// use the first valid devie found
+	gvdb.SetCudaDevice(GVDB_DEV_FIRST);
+	gvdb.Initialize();
+	gvdb.AddPath(path);
+	gvdb.AddPath(ASSET_PATH);
+	gvdb.StartRasterGL();
+	// ------------- Initialize GVDB ---------------------------
+
+	// Load raw file into the CPU
+	LoadRAW(path, Vector3DI(402, 402, 279), 1);		// This sets m_DataRes and m_DataBuf
+	printf("Convert to float.\n");
+	ConvertToFloat(m_DataRes, (uchar*)m_DataBuf); // Convert data to float
+
+	// Transfer source data to GPU
+	printf("Transfer data to GPU.\n");
+	// load the data into the AUX
+	gvdb.PrepareAux(AUX_DATA3D, m_DataRes.x*m_DataRes.y*m_DataRes.z, sizeof(float), false, false);
+	DataPtr& aux3D = gvdb.getAux(AUX_DATA3D);
+	// set the DATA from the CPU
+	gvdb.SetDataCPU(aux3D, m_DataRes.x*m_DataRes.y*m_DataRes.z, m_DataBuf, 0, sizeof(float));
+	// commit the data on the GPU
+	gvdb.CommitData(aux3D);
+
+	// Rebuild the data in GVDB	
+	m_VolMax = Vector3DF(500, 500, 400);
+	Rebuild(m_VolMax, m_dense);
+
+	gvdb.getScene()->SetSteps(0.25f, 16.f, 0.25f);			// Set raycasting steps
+	gvdb.getScene()->SetVolumeRange(0.0f, 0.0f, 1.0f);		// Set volume value range
+	gvdb.getScene()->SetCutoff(0.005f, 0.005f, 0.f);
+	gvdb.getScene()->SetShadowParams(0, 0, 0);
+	gvdb.getScene()->LinearTransferFunc(0.0f, 0.8f, Vector4DF(0, 0, 0, 0), Vector4DF(1.0f, 0.627f, 0.478f, 0.5f));
+	gvdb.getScene()->LinearTransferFunc(0.8f, 1.0f, Vector4DF(1.0f, 0.627f, 0.478f, 0.5f), Vector4DF(1.0f, 0.627f, 0.478f, 0.8f));
+	gvdb.CommitTransferFunc();
+
+	// Create Camera 
+	Camera3D* cam = new Camera3D;
+	cam->setFov(50.0);
+	cam->setNearFar(.1, 5000);
+	cam->setOrbit(Vector3DF(90,20, 0), Vector3DF(128,200,128), 1800, 1.0);
+	gvdb.getScene()->SetCamera(cam);
+
+	// Create Light
+	Light* lgt = new Light;
+	lgt->setOrbit(Vector3DF(299, 57.3f, 0), Vector3DF(0, 0, 0), 1400, 1.0);
+	gvdb.getScene()->SetLight(0, lgt);
+
+	// Add render buffer
+	nvprintf("Creating screen buffer. %d x %d\n", w, h);
+	gvdb.AddRenderBuf(0, w, h, 4);
+	
+	// display the gui interaction options
+	start_guis(w, h);
+	return true;
+}
+
+
 void Tposition::start_guis(int w, int h)
 {
 	clearGuis();
@@ -60,6 +137,7 @@ void Tposition::start_guis(int w, int h)
 	addGui(20, h - 30, 130, 20, "Topology", GUI_CHECK, GUI_BOOL, &m_show_topo, 0, 1);
 	addGui(160, h - 30, 130, 20, "Elipsoid", GUI_CHECK, GUI_BOOL, &m_elipsoid, 0, 1);
 	addGui(300, h - 30, 130, 20, "Dense", GUI_CHECK, GUI_BOOL, &m_dense, 0, 1);
+
 }
 
 bool Tposition::ConvertToFloat(Vector3DI res, uchar* dat)
@@ -129,13 +207,7 @@ void Tposition::Rebuild(Vector3DF vmax, bool dense)
 	// NOTE: 
 	// Transform represents the mapping from output space to input space (GVDB space to source data).
 	// SRT = Scale, Rotate, Translate.  p' = S R T p
-	// Rotate: Source data uses a different coordinate system, so we swap the Y and Z axes.
-	// Scale:  Source has Z+/- inverted, so we translate and invert the Y input (which gets mapped to Z)
-	//         Also, source X-axis is 128, so we scale the output res of 256 by 0.5. Scale=(.5,-1,1)
-	// Transl: Source has Z+/- inverted, so we translate to adjust the inverted Y. Trans=(0,0,256)
-	//
-	//xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 0, 1), Vector3DF(0, 1, 0), Vector3DF(0, 0, 252), Vector3DF(1, -1, 1));
-	xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 1, 0), Vector3DF(0, 0, 1), Vector3DF(0, 0, 1), Vector3DF(1, 1, 1));
+	xform.SRT(Vector3DF(1, 0, 0), Vector3DF(0, 1, 0), Vector3DF(0, 0, 1), Vector3DF(0, 0, 0), Vector3DF(1, 1, 1));
 
 	// Activate volume
 	printf("Activate GVDB volume.\n");
@@ -161,102 +233,13 @@ void Tposition::Rebuild(Vector3DF vmax, bool dense)
 	gvdb.FinishTopology();
 	gvdb.UpdateAtlas();
 	gvdb.ClearAllChannels();
+	
 	// Resample data. 
 	// The two vectors here represent the input and output value ranges.
 	// During ConvertToFloat we already divided the source uchar by 256, so input data is already [0,1]. 
 	// Output data, stored in GVDB, will also be [0,1]. Third value is reserved for future (ignored).
-
 	printf("Resample.\n");
 	gvdb.Resample(0, xform, m_DataRes, AUX_DATA3D, Vector3DF(0, 1, 0), Vector3DF(0, 1, 0));
-}
-
-bool Tposition::init()
-{
-	int w = getWidth(), h = getHeight();			// window width & height
-	m_gvdb_tex = -1;
-	mouse_down = -1;
-	m_show_topo = false;
-	m_elipsoid = false;
-	m_dense = false;
-	m_DataBuf = 0;
-
-	init2D("arial");
-
-	char* path = "../resource";
-
-	// Initialize GVDB
-	int devid = -1;
-	gvdb.SetVerbose(true);
-	gvdb.SetCudaDevice(devid);
-	gvdb.Initialize();
-	gvdb.AddPath(path);
-	gvdb.AddPath(ASSET_PATH);
-
-	gvdb.StartRasterGL();
-	// Load all files of the folder into the GPU
-	LoadRAW(path, Vector3DI(402, 402, 279), 1);		// This sets m_DataRes and m_DataBuf
-
-	// Convert data to float
-	printf("Convert to float.\n");
-	ConvertToFloat(m_DataRes, (uchar*)m_DataBuf);
-
-	// Transfer source data to GPU
-	printf("Transfer data to GPU.\n");
-	gvdb.PrepareAux(AUX_DATA3D, m_DataRes.x*m_DataRes.y*m_DataRes.z, sizeof(float), false, false);
-	DataPtr& aux3D = gvdb.getAux(AUX_DATA3D);
-	gvdb.SetDataCPU(aux3D, m_DataRes.x*m_DataRes.y*m_DataRes.z, m_DataBuf, 0, sizeof(float));
-	gvdb.CommitData(aux3D);
-
-	// Rebuild the data in GVDB	
-	m_VolMax = Vector3DF(500, 500, 400);
-	Rebuild(m_VolMax, m_dense);
-
-	// Set volume params
-	//gvdb.getScene()->SetSteps(.5, 16, .5);				// Set raycasting steps
-	//gvdb.getScene()->SetExtinct(-1.0f, 1.5f, 0.0f);		// Set volume extinction
-	//gvdb.getScene()->SetVolumeRange(0.05f, 0.0f, 1.f);	// Set volume value range
-	//gvdb.getScene()->SetCutoff(0.001f, 0.001f, 0.0f);
-	//gvdb.getScene()->SetBackgroundClr(0.1f, 0.2f, 0.4f, 1.0);
-	//gvdb.getScene()->LinearTransferFunc(0.00f, 0.15f, Vector4DF(0, 0, 0, 0), Vector4DF(0, 0, 0, 0.0f));
-	//gvdb.getScene()->LinearTransferFunc(0.15f, 0.25f, Vector4DF(0, 0, 0, 0), Vector4DF(0, 0, 1, 0.01f));			// skin range, blue
-	//gvdb.getScene()->LinearTransferFunc(0.25f, 0.50f, Vector4DF(0, 0, 1, 0.01f), Vector4DF(1, 0, 0, 0.02f));		// bone range, red
-	//gvdb.getScene()->LinearTransferFunc(0.50f, 0.75f, Vector4DF(1, 0, 0, 0.02f), Vector4DF(.2f, .2f, 0.2f, 0.02f));
-	//gvdb.getScene()->LinearTransferFunc(0.75f, 1.00f, Vector4DF(.2f, .2f, 0.2f, 0.02f), Vector4DF(.1, .1, .1, 0.1));
-	//gvdb.CommitTransferFunc();
-
-	gvdb.getScene()->SetSteps(0.25f, 16.f, 0.25f);			// Set raycasting steps
-	gvdb.getScene()->SetVolumeRange(0.25f, 0.0f, 1.0f);		// Set volume value range
-	gvdb.getScene()->SetExtinct(-1.0f, 1.1f, 0.f);			// Set volume extinction	
-	gvdb.getScene()->SetCutoff(0.005f, 0.005f, 0.f);
-	gvdb.getScene()->SetShadowParams(0, 0, 0);
-	gvdb.getScene()->LinearTransferFunc(0.0f, 0.5f, Vector4DF(0, 0, 0, 0), Vector4DF(1.f, 1.f, 1.f, 0.5f));
-	gvdb.getScene()->LinearTransferFunc(0.5f, 1.0f, Vector4DF(1.f, 1.f, 1.f, 0.5f), Vector4DF(1, 1, 1, 0.8f));
-	gvdb.CommitTransferFunc();
-
-	// Create Camera 
-	Camera3D* cam = new Camera3D;
-	cam->setFov(50.0);
-	cam->setNearFar(.1, 5000);
-	cam->setOrbit(Vector3DF(90, 20, 0), Vector3DF(128, 100, 128), 1000, 1.0);
-	gvdb.getScene()->SetCamera(cam);
-
-	// Create Light
-	Light* lgt = new Light;
-	lgt->setOrbit(Vector3DF(299, 57.3f, 0), Vector3DF(0, 0, 0), 1400, 1.0);
-	gvdb.getScene()->SetLight(0, lgt);
-
-	// Add render buffer
-	nvprintf("Creating screen buffer. %d x %d\n", w, h);
-	gvdb.AddRenderBuf(0, w, h, 4);
-
-	// Create opengl texture for display
-	// This is a helper func in sample utils (not part of gvdb),
-	// which creates or resizes an opengl 2D texture.
-	createScreenQuadGL(&m_gvdb_tex, w, h);
-
-	start_guis(w, h);
-
-	return true;
 }
 
 void Tposition::reshape(int w, int h)
@@ -311,7 +294,8 @@ void Tposition::draw_elipsoid() {
 	int node_cnt = gvdb.getNumNodes(lev);
 	Vector3DF bmin, bmax;
 	Node* node;
-	for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
+//	for (int n = 0; n < node_cnt; n++) {			// draw all nodes at this level
+	for (int n = 0; n < 1; n++) {
 		node = gvdb.getNodeAtLevel(n, lev);
 		bmin = gvdb.getWorldMin(node);		// get node bounding box
 		bmax = gvdb.getWorldMax(node);		// draw node as a box
@@ -331,8 +315,8 @@ void Tposition::display()
 	gvdb.TimerStart();
 	gvdb.Render(SHADE_VOLUME, 0, 0);    // last value indicates render buffer for depth input
 	//gvdb.Render( SHADE_VOLUME, 0, 0 );    // last value indicates render buffer for depth input
-	float rtime = gvdb.TimerStop();
-	nvprintf("Render volume. %6.3f ms\n", rtime);
+	//float rtime = gvdb.TimerStop();
+	//nvprintf("Render volume. %6.3f ms\n", rtime);
 
 	// Copy GVDB output buffer into OpenGL texture	
 	gvdb.ReadRenderTexGL(0, m_gvdb_tex);
@@ -397,6 +381,10 @@ void Tposition::mouse(NVPWindow::MouseButton button, NVPWindow::ButtonAction sta
 
 	// Track when we are in a mouse drag
 	mouse_down = (state == NVPWindow::BUTTON_PRESS) ? button : -1;
+}
+
+void Tposition::printVector3DF(Vector3DF vector) {
+	nvprintf("X: %f, Y: %f, Z: %f\n", vector.x, vector.y, vector.z);
 }
 
 int sample_main(int argc, const char** argv)
